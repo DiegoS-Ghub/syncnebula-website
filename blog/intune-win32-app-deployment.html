@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Deploying Win32 Applications with Microsoft Intune: A Debugging Deep Dive | SyncNebula</title>
+
+    <meta name="description"
+          content="A troubleshooting walkthrough of deploying UltraViewer as a Win32 app through Microsoft Intune — three separate failures, how they were diagnosed, and how they were fixed.">
+
+    <link rel="stylesheet" href="../CSS/style.css">
+</head>
+
+<body>
+
+    <!-- Navigation -->
+    <header>
+        <nav>
+            <a href="../index.html#home" class="logo">SyncNebula</a>
+
+            <div class="nav-links">
+                <a href="../index.html#home">Home</a>
+                <a href="../index.html#services">Services</a>
+                <a href="../index.html#projects">Projects</a>
+                <a href="../index.html#blog">Blog</a>
+                <a href="../index.html#about">About</a>
+                <a href="../index.html#contact">Contact</a>
+            </div>
+        </nav>
+    </header>
+
+    <main>
+
+        <!-- Post Hero -->
+        <section class="post-hero">
+
+            <a href="../index.html#blog" class="post-back">← Back to Blog</a>
+
+            <p class="blog-category">MICROSOFT INTUNE • DEVICE MANAGEMENT</p>
+
+            <h1>Deploying Win32 Applications with Microsoft Intune: A Debugging Deep Dive</h1>
+
+            <p class="post-meta">
+                <span>SyncNebula</span>
+                <span>Intune • Win32 Apps • Troubleshooting</span>
+            </p>
+
+        </section>
+
+        <!-- Post Body -->
+        <article class="post-body">
+
+            <h2>When "Installation Successful" Doesn't Mean "Application Installed"</h2>
+
+            <p>
+                Deploying a Windows application through Microsoft Intune sounds straightforward:
+                package the installer, upload it as a Win32 application, configure the
+                installation command, create a detection rule, assign it to devices, and
+                wait for the application to install.
+            </p>
+
+            <p>
+                In practice, the difficult part often isn't getting the installer into Intune.
+            </p>
+
+            <p>
+                The difficult part is making sure <strong>the installer, execution context,
+                installation behavior, and detection logic all agree with each other</strong>.
+            </p>
+
+            <p>
+                I encountered exactly this while deploying UltraViewer to Intune-managed
+                Windows devices in a Microsoft 365 E5 development environment.
+            </p>
+
+            <p>
+                The application eventually installed and worked correctly on both an
+                Azure-hosted test VM and a physical Intune-joined device. However, getting
+                there required debugging three separate problems:
+            </p>
+
+            <ol>
+                <li>Intune reported that the application was not detected even though installation had apparently completed.</li>
+                <li>The installer returned exit code <code>0</code> but appeared to install nothing.</li>
+                <li>After fixing the installation, Intune still could not detect the application because the detection rule referenced the wrong executable name.</li>
+            </ol>
+
+            <p>
+                This article walks through the investigation and the techniques that resolved
+                each problem.
+            </p>
+
+            <hr>
+
+            <h2>The Lab Environment</h2>
+
+            <p>The testing environment consisted of:</p>
+
+            <ul>
+                <li>Microsoft 365 E5 development tenant</li>
+                <li>Microsoft Intune</li>
+                <li>Windows devices joined to Intune</li>
+                <li>One Azure-hosted Windows test VM</li>
+                <li>One physical Intune-joined Windows device</li>
+                <li>UltraViewer as the third-party application</li>
+                <li>Microsoft Win32 Content Prep Tool for <code>.intunewin</code> packaging</li>
+                <li>PowerShell</li>
+                <li>Sysinternals PsExec</li>
+            </ul>
+
+            <p>The objective was simple:</p>
+
+            <blockquote>
+                Package UltraViewer as a Win32 application and deploy it silently to
+                Intune-managed Windows devices.
+            </blockquote>
+
+            <p>
+                The troubleshooting process, however, revealed several important details
+                about how Intune application deployment actually works.
+            </p>
+
+            <hr>
+
+            <h2>1. Start With the Installer — Not Intune</h2>
+
+            <p>
+                Before creating the Intune application, the first thing I should have
+                established was:
+            </p>
+
+            <ul>
+                <li>Where does the application actually install?</li>
+                <li>What is the actual executable name?</li>
+                <li>What installer technology is being used?</li>
+                <li>Which silent-install parameters does that installer actually support?</li>
+                <li>Does the installer behave differently when executed as SYSTEM?</li>
+            </ul>
+
+            <p>
+                These details become extremely important later because Intune does not
+                simply ask Windows to "install an application."
+            </p>
+
+            <p>
+                It executes a specific command under the Intune Management Extension and
+                then uses detection rules to determine whether the desired application
+                state has been achieved.
+            </p>
+
+            <p>
+                That means an apparently small assumption — such as assuming the
+                installation directory or silent-install switch — can break the entire
+                deployment.
+            </p>
+
+            <hr>
+
+            <h2>2. Package the Application as a Win32 App</h2>
+
+            <p>
+                The UltraViewer installer was packaged using Microsoft's Win32 Content
+                Prep Tool. The resulting package had the <code>.intunewin</code> format
+                required for Win32 application deployment through Intune.
+            </p>
+
+            <p>The general process is:</p>
+
+            <ol>
+                <li>Place the installer in a source directory.</li>
+                <li>Run the Win32 Content Prep Tool.</li>
+                <li>Select the installer as the source file.</li>
+                <li>Specify the output directory.</li>
+                <li>Upload the resulting <code>.intunewin</code> package to Intune.</li>
+            </ol>
+
+            <p>
+                The important point here is that packaging itself was not the problem.
+                The package successfully reached the device. The problems appeared during
+                <strong>execution and detection</strong>.
+            </p>
+
+            <hr>
+
+            <h2>3. Problem One — Installation Succeeded, but Intune Said the App Wasn't Detected</h2>
+
+            <p>The first major error was:</p>
+
+            <blockquote>0x87D1041C</blockquote>
+
+            <p>
+                The message indicated that the application was not detected after
+                installation had completed successfully.
+            </p>
+
+            <p>
+                At first glance, this was confusing. The installation command appeared to
+                run successfully, but Intune still considered the application missing.
+                This is where detection rules become critical.
+            </p>
+
+            <h3>What Was the Detection Rule Checking?</h3>
+
+            <p>The original detection rule used a path based on:</p>
+
+            <p><code>%ProgramFiles%</code></p>
+
+            <p>
+                The expectation was that this would point to the application's
+                installation directory. However, UltraViewer is a 32-bit application and
+                was actually installed under:
+            </p>
+
+            <p><code>C:\Program Files (x86)\UltraViewer</code></p>
+
+            <p>
+                The Intune Management Extension runs as a 64-bit process on 64-bit
+                Windows clients. In this context, <code>%ProgramFiles%</code> resolves to
+                the 64-bit Program Files location rather than the application's actual
+                32-bit installation directory.
+            </p>
+
+            <p>
+                So Intune was effectively checking the wrong location. The application
+                existed. The detection rule simply wasn't looking where the application
+                existed.
+            </p>
+
+            <h3>The Fix</h3>
+
+            <p>The detection rule was changed to explicitly target:</p>
+
+            <p><code>C:\Program Files (x86)\UltraViewer</code></p>
+
+            <p>The option <strong>Associated with a 32-bit app on 64-bit clients</strong>
+            was also enabled so that Intune would evaluate the detection rule using the
+            appropriate 32-bit context.</p>
+
+            <p>
+                The uninstall command was also updated to reference the 32-bit Program
+                Files environment variable where appropriate.
+            </p>
+
+            <blockquote>
+                Lesson: Do not assume that <code>%ProgramFiles%</code> represents the
+                directory where every Windows application is installed. For 32-bit
+                applications running on 64-bit Windows, verify the actual installation
+                location before building the detection rule.
+            </blockquote>
+
+            <hr>
+
+            <h2>4. Problem Two — The Installer Returned Exit Code 0 but Installed Nothing</h2>
+
+            <p>
+                After correcting the detection path, another problem appeared. The
+                application still wasn't being installed.
+            </p>
+
+            <p>What made this particularly interesting was that the installer returned:</p>
+
+            <p><code>Exit code: 0</code></p>
+
+            <p>
+                Normally, an exit code of <code>0</code> suggests successful execution.
+                But the application wasn't present on the device. A drive-wide search of
+                <code>C:\</code> confirmed that the expected application files were
+                nowhere to be found.
+            </p>
+
+            <p>
+                This meant the problem wasn't detection anymore. The installer itself
+                wasn't performing the expected installation.
+            </p>
+
+            <hr>
+
+            <h2>5. The Silent-Install Switch Was Wrong</h2>
+
+            <p>The installation command was initially using:</p>
+
+            <p><code>/S</code></p>
+
+            <p>
+                This was based on vendor documentation and the assumption that
+                <code>/S</code> represented the installer's silent mode.
+            </p>
+
+            <p>
+                The problem was that <code>/S</code> is not a universal Windows installer
+                switch. Different installer technologies use different command-line
+                parameters. In this case, the UltraViewer installer was using
+                <strong>Inno Setup</strong>.
+            </p>
+
+            <p>
+                The installer did not interpret <code>/S</code> as the required
+                silent-install instruction. More importantly, it did not fail loudly
+                enough to make the problem obvious. The command could return exit code
+                <code>0</code> while still not producing the expected installation.
+            </p>
+
+            <p>
+                This is a dangerous situation for automated deployment because Intune can
+                interpret the command as successfully executed while the desired
+                application state has never been created.
+            </p>
+
+            <hr>
+
+            <h2>6. Reproducing Intune's Execution Context With PsExec</h2>
+
+            <p>This was the most useful diagnostic step in the entire investigation.</p>
+
+            <p>
+                Instead of repeatedly changing settings in Intune and waiting for another
+                deployment cycle, I wanted to reproduce the environment in which Intune
+                actually executes the installer.
+            </p>
+
+            <p>
+                The Intune Management Extension executes application installations under
+                the <strong>SYSTEM</strong> account. Using PsExec from Microsoft's
+                Sysinternals suite, I opened a command prompt running as SYSTEM. From
+                that shell, I manually executed the installer.
+            </p>
+
+            <p>
+                Instead of silently installing, the installer displayed its interactive
+                installation wizard. It presented the destination-folder selection
+                interface. That immediately explained what was happening.
+            </p>
+
+            <p>
+                The installer was not actually running silently. Under a normal
+                interactive user session, a person could click through the wizard. Under
+                Intune's SYSTEM context, there is no administrator sitting in front of
+                the installation waiting to select a destination folder.
+            </p>
+
+            <p>
+                For an automated deployment, that interactive UI is effectively a dead
+                end.
+            </p>
+
+            <hr>
+
+            <h2>7. The Correct Inno Setup Parameters</h2>
+
+            <p>
+                The installation command was changed to use the appropriate Inno Setup
+                silent-install parameters:
+            </p>
+
+            <p><code>/VERYSILENT /SUPPRESSMSGBOXES /NORESTART</code></p>
+
+            <p>
+                These parameters were designed for unattended installation and prevented
+                the interactive wizard from appearing.
+            </p>
+
+            <p>
+                This was the turning point. The installer could now execute without
+                requiring user interaction, and the application was actually placed on
+                the device.
+            </p>
+
+            <hr>
+
+            <h2>8. Problem Three — The Application Was Installed, but Detection Still Failed</h2>
+
+            <p>At this point, the deployment appeared to be working.</p>
+
+            <p>
+                UltraViewer was physically present on the machine. The application
+                launched correctly. It could also be accessed remotely, confirming that
+                the installation itself was functional.
+            </p>
+
+            <p>Yet Intune continued reporting a detection failure.</p>
+
+            <p>
+                This meant we had moved back to the detection stage. The installation was
+                no longer the problem. The detection rule was.
+            </p>
+
+            <hr>
+
+            <h2>9. The Executable Name Was Wrong</h2>
+
+            <p>The detection rule was configured to look for:</p>
+
+            <p><code>UltraViewer.exe</code></p>
+
+            <p>However, the installed application actually contained:</p>
+
+            <p><code>UltraViewer_Desktop.exe</code></p>
+
+            <p>
+                The difference was small enough to be easy to overlook but significant
+                enough to make the detection rule fail every time.
+            </p>
+
+            <p>From Intune's perspective:</p>
+
+            <blockquote>"I checked for the file you told me to check for, and it isn't there."</blockquote>
+
+            <p>From the administrator's perspective:</p>
+
+            <blockquote>"But the application is installed and working."</blockquote>
+
+            <p>
+                Both statements were technically correct. The detection rule was simply
+                looking for the wrong file.
+            </p>
+
+            <h3>The Fix</h3>
+
+            <p>The detection rule was updated to target the actual executable:</p>
+
+            <p><code>UltraViewer_Desktop.exe</code></p>
+
+            <p>
+                Once this was corrected, Intune could correctly identify the application
+                as installed.
+            </p>
+
+            <hr>
+
+            <h2>10. The Three Problems Side by Side</h2>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Problem</th>
+                        <th>Actual Cause</th>
+                        <th>Fix</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Detection failed after installation</td>
+                        <td>Detection checked 64-bit Program Files instead of the 32-bit installation directory</td>
+                        <td>Use <code>C:\Program Files (x86)\UltraViewer</code> and enable the 32-bit app detection option</td>
+                    </tr>
+                    <tr>
+                        <td>Installer returned success but application wasn't installed</td>
+                        <td>Incorrect silent-install switch</td>
+                        <td>Use the installer's actual Inno Setup silent parameters</td>
+                    </tr>
+                    <tr>
+                        <td>Application was installed but detection still failed</td>
+                        <td>Detection referenced <code>UltraViewer.exe</code> instead of the actual executable</td>
+                        <td>Detect <code>UltraViewer_Desktop.exe</code></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <p>
+                The important point is that <strong>none of these problems required
+                changing Intune itself</strong>. The deployment mechanism was working.
+                The assumptions around the application were wrong.
+            </p>
+
+            <hr>
+
+            <h2>11. The Intune Logs That Actually Mattered</h2>
+
+            <p>
+                When debugging Win32 application deployment, Intune generates a
+                significant amount of logging information. Two logs — both under
+                <code>C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\</code> —
+                were particularly useful for this investigation.
+            </p>
+
+            <h3>AppWorkload.log</h3>
+
+            <p>This was useful for understanding:</p>
+
+            <ul>
+                <li>Application detection</li>
+                <li>Application state</li>
+                <li>Policy information</li>
+                <li>Detection results</li>
+                <li>Deployment processing</li>
+            </ul>
+
+            <p>
+                When the application was installed but Intune continued reporting it as
+                missing, this was one of the most useful places to investigate.
+            </p>
+
+            <h3>AgentExecutor.log</h3>
+
+            <p>This was useful for examining the actual command execution. It helped answer questions such as:</p>
+
+            <ul>
+                <li>What command was executed?</li>
+                <li>What exit code was returned?</li>
+                <li>Did the installation command actually execute?</li>
+                <li>Was the installer being launched as expected?</li>
+            </ul>
+
+            <h3>What About IntuneManagementExtension.log?</h3>
+
+            <p>
+                The main <code>IntuneManagementExtension.log</code> can be useful for
+                general troubleshooting, but in this particular investigation it
+                contained considerably more general synchronization and extension
+                activity than the two logs above. The most useful approach was therefore
+                to focus on the logs closest to the actual application workload and
+                command execution.
+            </p>
+
+            <hr>
+
+            <h2>12. Useful PowerShell Checks</h2>
+
+            <p>
+                PowerShell made it much easier to verify what was actually happening on
+                the device rather than relying solely on the Intune portal.
+            </p>
+
+            <p>For example, the installation path could be tested directly:</p>
+
+            <pre><code>Test-Path "C:\Program Files (x86)\UltraViewer"</code></pre>
+
+            <p>The contents could then be inspected:</p>
+
+            <pre><code>Get-ChildItem "C:\Program Files (x86)\UltraViewer"</code></pre>
+
+            <p>To watch an Intune log while a deployment was being processed:</p>
+
+            <pre><code>Get-Content "C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\AppWorkload.log" -Wait -Tail 50</code></pre>
+
+            <p>The same approach can be used with <code>AgentExecutor.log</code>:</p>
+
+            <pre><code>Get-Content "C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\AgentExecutor.log" -Wait -Tail 50</code></pre>
+
+            <p>
+                During testing, the Intune Management Extension service can also be
+                restarted to trigger another processing cycle:
+            </p>
+
+            <pre><code>Restart-Service IntuneManagementExtension -Force</code></pre>
+
+            <p>
+                These commands don't replace proper Intune monitoring, but they provide
+                much faster visibility into what is happening directly on the endpoint.
+            </p>
+
+            <hr>
+
+            <h2>13. Don't Rely Entirely on Company Portal</h2>
+
+            <p>
+                Company Portal is useful because it provides an end-user-facing view of
+                application deployment. However, it should not be treated as a real-time
+                diagnostic tool.
+            </p>
+
+            <p>
+                The status shown to the user depends on the device's communication and
+                check-in state. During troubleshooting, it was far more useful to
+                combine:
+            </p>
+
+            <blockquote>
+                Company Portal + Intune admin center + endpoint logs + direct filesystem
+                verification
+            </blockquote>
+
+            <p>rather than relying on any one source. For example:</p>
+
+            <ul>
+                <li>Company Portal says the app is still installing.</li>
+                <li>The application is actually present on disk.</li>
+                <li>The executable launches successfully.</li>
+                <li><code>AppWorkload.log</code> shows the detection rule is failing.</li>
+            </ul>
+
+            <p>
+                That combination tells a much more useful story than the Company Portal
+                status alone.
+            </p>
+
+            <hr>
+
+            <h2>14. A Better Deployment Workflow</h2>
+
+            <p>
+                The biggest lesson from this lab is that several hours of troubleshooting
+                could have been avoided by validating the application before creating
+                the Intune deployment. A better workflow is:
+            </p>
+
+            <h3>Step 1 — Install the application manually</h3>
+
+            <p>Determine:</p>
+
+            <ul>
+                <li>Installation directory</li>
+                <li>Actual executable name</li>
+                <li>Installed files</li>
+                <li>Registry entries if relevant</li>
+                <li>Uninstaller</li>
+                <li>Application architecture</li>
+            </ul>
+
+            <h3>Step 2 — Identify the installer technology</h3>
+
+            <p>Determine whether the application uses something such as:</p>
+
+            <ul>
+                <li>Inno Setup</li>
+                <li>MSI</li>
+                <li>NSIS</li>
+                <li>InstallShield</li>
+                <li>Another installer framework</li>
+            </ul>
+
+            <p>Do not assume that a silent-install parameter from vendor documentation applies to every installer.</p>
+
+            <h3>Step 3 — Test the silent command manually</h3>
+
+            <p>Run the exact command that will eventually be used by Intune. Verify that:</p>
+
+            <ul>
+                <li>No user interaction is required.</li>
+                <li>The expected files are created.</li>
+                <li>The expected application launches.</li>
+                <li>The command returns an appropriate exit code.</li>
+            </ul>
+
+            <h3>Step 4 — Test under SYSTEM</h3>
+
+            <p>
+                Use a SYSTEM-context shell such as PsExec to reproduce the environment
+                used by the Intune Management Extension. This is particularly important
+                for installers that behave differently depending on:
+            </p>
+
+            <ul>
+                <li>User context</li>
+                <li>Permissions</li>
+                <li>Environment variables</li>
+                <li>UI availability</li>
+                <li>Profile locations</li>
+            </ul>
+
+            <h3>Step 5 — Build the detection rule from reality</h3>
+
+            <p>Do not build detection rules from assumptions. Use the actual:</p>
+
+            <ul>
+                <li>Installation path</li>
+                <li>Executable name</li>
+                <li>Registry location</li>
+                <li>File version</li>
+            </ul>
+
+            <p>that you observed on the endpoint.</p>
+
+            <h3>Step 6 — Package the application</h3>
+
+            <p>Create the <code>.intunewin</code> package and upload it to Intune.</p>
+
+            <h3>Step 7 — Deploy to a test device</h3>
+
+            <p>Use a controlled test group before broad deployment.</p>
+
+            <h3>Step 8 — Validate from multiple perspectives</h3>
+
+            <p>Check:</p>
+
+            <ul>
+                <li>Intune admin center</li>
+                <li>Company Portal</li>
+                <li>Application files</li>
+                <li>Application execution</li>
+                <li><code>AppWorkload.log</code></li>
+                <li><code>AgentExecutor.log</code></li>
+            </ul>
+
+            <p>This workflow makes troubleshooting significantly more systematic.</p>
+
+            <hr>
+
+            <h2>15. The Bigger Lesson</h2>
+
+            <p>The three failures looked unrelated:</p>
+
+            <blockquote>Wrong path → wrong silent switch → wrong executable name</blockquote>
+
+            <p>But they all came from the same underlying problem:</p>
+
+            <blockquote>
+                Assumptions were being made about how the application installed instead
+                of verifying how it actually behaved.
+            </blockquote>
+
+            <p>
+                This is particularly important when deploying third-party Win32
+                applications through Intune. Intune can only work with the information
+                it is given.
+            </p>
+
+            <p>
+                If the installer command is wrong, Intune cannot magically correct it.
+                If the detection path is wrong, Intune cannot know that the application
+                is actually present. If the executable name is wrong, the detection rule
+                will continue to fail even though the application is functioning
+                perfectly.
+            </p>
+
+            <hr>
+
+            <h2>Conclusion</h2>
+
+            <p>
+                Win32 application deployment through Microsoft Intune is not simply a
+                matter of uploading an installer and selecting a deployment group.
+            </p>
+
+            <p>A successful deployment depends on three things working together:</p>
+
+            <blockquote>Installation command → Actual application state → Detection rule</blockquote>
+
+            <p>
+                If any one of these is incorrect, the deployment can produce confusing
+                results.
+            </p>
+
+            <p>The most valuable lesson from this troubleshooting exercise was simple:</p>
+
+            <blockquote>Never trust assumed defaults for a silent installation. Verify them.</blockquote>
+
+            <p>
+                Install the application manually first. Find the real installation path.
+                Identify the real executable. Determine which installer technology is
+                being used. Test the exact silent command. Then reproduce that command
+                under SYSTEM before deploying it through Intune.
+            </p>
+
+            <p>
+                Doing this up front can turn an apparently mysterious Intune deployment
+                failure into a straightforward configuration problem.
+            </p>
+
+            <div class="post-tags">
+                <span>Intune</span>
+                <span>Win32 Apps</span>
+                <span>PowerShell</span>
+                <span>PsExec</span>
+                <span>Device Management</span>
+            </div>
+
+        </article>
+
+    </main>
+
+    <!-- Footer -->
+    <footer>
+
+        <div class="footer-content">
+
+            <div>
+                <a href="../index.html#home" class="footer-logo">SyncNebula</a>
+                <p>Practical technology. Real-world solutions.</p>
+            </div>
+
+            <div class="footer-links">
+                <a href="../index.html#services">Services</a>
+                <a href="../index.html#projects">Projects</a>
+                <a href="../index.html#blog">Blog</a>
+                <a href="../index.html#about">About</a>
+            </div>
+
+        </div>
+
+        <div class="footer-bottom">
+            <p>© 2026 SyncNebula. All rights reserved.</p>
+        </div>
+
+    </footer>
+
+</body>
+</html>

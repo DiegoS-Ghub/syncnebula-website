@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Gawaah v1: An Archive Assistant for Urdu Newsrooms | SyncNebula</title>
+
+    <meta name="description"
+          content="Gawaah is an AI archive assistant that answers a newsroom's questions in Urdu, Roman Urdu or English from its own published coverage, with sources. Version 1 prototype, how it works and how it was tested.">
+
+    <link rel="stylesheet" href="../CSS/style.css">
+</head>
+
+<body>
+
+    <!-- Navigation -->
+    <header>
+        <nav>
+            <a href="../index.html#home" class="logo">SyncNebula</a>
+
+            <div class="nav-links">
+                <a href="../index.html#home">Home</a>
+                <a href="../index.html#services">Services</a>
+                <a href="../index.html#projects">Projects</a>
+                <a href="../index.html#blog">Blog</a>
+                <a href="../index.html#about">About</a>
+                <a href="../index.html#contact">Contact</a>
+            </div>
+        </nav>
+    </header>
+
+    <main>
+
+        <!-- Post Hero -->
+        <section class="post-hero">
+
+            <a href="../index.html#blog" class="post-back">← Back to Blog</a>
+
+            <p class="blog-category">AI • RAG</p>
+
+            <h1>Gawaah v1: An Archive Assistant for Urdu Newsrooms</h1>
+
+            <p class="post-meta">
+                <span>SyncNebula</span>
+                <span>Azure OpenAI • Azure AI Search • Azure Functions</span>
+            </p>
+
+        </section>
+
+        <!-- Post Body -->
+        <article class="post-body">
+
+            <h2>The Question Nobody Has Time to Answer</h2>
+
+            <p>
+                Every newsroom has the same quiet problem. A guest says something on
+                air, and someone in the control room wonders: <em>didn't we report
+                the opposite last year?</em> The answer is somewhere in the archive,
+                but finding it takes minutes nobody has, especially when the archive
+                is a mix of Urdu and English and people search in Roman Urdu on
+                their phones.
+            </p>
+
+            <p>
+                <strong>Gawaah</strong> is an attempt to fix that. A producer types a
+                question in Urdu, Roman Urdu or English, and gets a short answer built
+                only from the newsroom's own published coverage, with links to the
+                original articles. This post covers <strong>version 1</strong>: a
+                working prototype. More updates will follow as it grows.
+            </p>
+
+            <!--
+            Optional: add a screenshot or demo image here, same style as the Courage post.
+            <img src="images/gawaah-demo.png"
+                 alt="Gawaah producer screen and anchor screen side by side"
+                 style="width: 100%; border-radius: 12px; margin: 30px 0; box-shadow: 0 16px 42px rgba(15, 23, 42, 0.08);">
+            -->
+
+            <hr>
+
+            <h2>1. What Gawaah v1 Does</h2>
+
+            <ul>
+                <li><strong>Answers with sources.</strong> Every answer links to the original articles and shows their dates.</li>
+                <li><strong>Works across languages.</strong> An English question can find an Urdu article, and an Urdu question can find an English one.</li>
+                <li><strong>Forgives messy input.</strong> Roman Urdu spellings and misspelled names still find the right story.</li>
+                <li><strong>Understands time.</strong> Ask what a minister said "in June 2024" and it searches that month.</li>
+                <li><strong>Says "not found" instead of guessing.</strong> If the archive has no coverage, it says so, and it will not stitch unrelated stories into an answer.</li>
+                <li><strong>Shows how coverage changed.</strong> If a statement in June was followed by a different decision in September, it reports both, with dates. It never calls anyone a liar. It reports what was published and when, and the producer decides what to do with it.</li>
+                <li><strong>Writes an on-air line.</strong> Next to the answer, it drafts a one-line summary that fits an anchor's screen, and the producer can edit it.</li>
+                <li><strong>Sends evidence to the anchor.</strong> One click puts the line and its sources on a separate anchor screen within about two seconds.</li>
+            </ul>
+
+            <hr>
+
+            <h2>2. How It Works</h2>
+
+            <p>The pieces are few, and each has one job:</p>
+
+            <ul>
+                <li><strong>Azure OpenAI (GPT-5.5)</strong> — understands questions and writes the grounded answers.</li>
+                <li><strong>An embedding model</strong> — turns text into numeric "meaning fingerprints", so searches match on meaning as well as exact words.</li>
+                <li><strong>Azure AI Search</strong> — stores the archive and finds the best matching passages using keyword and meaning search together.</li>
+                <li><strong>Azure Storage</strong> — keeps the original articles, and a small table that carries evidence from the producer to the anchor.</li>
+                <li><strong>Azure Functions</strong> — the API that ties it together.</li>
+                <li><strong>Two simple web pages</strong> — one for the producer, one for the anchor.</li>
+            </ul>
+
+            <blockquote>
+                Question → rewritten into English and Urdu search queries → search the
+                archive → write an answer from the best passages only → show it with
+                sources → optionally send the one-line version to the anchor's screen.
+            </blockquote>
+
+            <hr>
+
+            <h2>3. The Step That Made the Biggest Difference</h2>
+
+            <p>
+                The first version simply searched with the question as typed. It
+                worked for most questions, but failed in a clear pattern: an English
+                question about a story published in Urdu kept returning English
+                articles instead, because words and meaning matched better within the
+                same language.
+            </p>
+
+            <p>
+                The fix was a short rewrite step before searching. A model turns each
+                question into a clean English query and a clean Urdu query, normalises
+                name spellings, and pulls out any date range mentioned. The search
+                then uses both. Misspelled names, Roman Urdu and cross-language
+                questions all improved at once, and date questions started using a
+                real date filter instead of hoping the model would guess.
+            </p>
+
+            <hr>
+
+            <h2>4. Teaching It to Say "Not Found"</h2>
+
+            <p>
+                Search always returns something, even when the archive has nothing
+                useful. A tool that answers anyway is dangerous in a newsroom, where
+                one invented answer on air costs far more than ten honest "not found"
+                replies.
+            </p>
+
+            <p>
+                So the answer step has strict rules: use only the passages provided,
+                answer only the part that is actually supported, state what is
+                missing, and refuse when the passages merely share a name or place
+                with the question without answering it. The hardest tests were the
+                near-misses, such as a real person's name paired with a topic they
+                never spoke about.
+            </p>
+
+            <blockquote>
+                Lesson: retrieval finds candidates; it is the answer step's job to
+                decide whether any of them actually answer the question.
+            </blockquote>
+
+            <hr>
+
+            <h2>5. How It Was Tested</h2>
+
+            <p>
+                The test archive was small and synthetic: 10 invented English and
+                Urdu articles, with 25 test questions. Twenty had answers in the
+                archive and five did not. The questions covered English, Urdu, Roman
+                Urdu, misspelled names, date-based questions and a deliberately
+                tricky case where two articles from different months seem to
+                contradict each other.
+            </p>
+
+            <ul>
+                <li>Plain search found the right article for <strong>15 of the 20</strong> answerable questions.</li>
+                <li>With the rewrite step, it found the right article for <strong>all 20</strong>.</li>
+                <li>With the answer rules in place, it correctly refused <strong>all 5</strong> questions that had no answer.</li>
+                <li>A typical answer takes about six seconds.</li>
+            </ul>
+
+            <p>
+                This is a small, controlled test. It shows the approach works, not
+                that it is ready for a real archive of thousands of articles with
+                messy text, near-duplicate stories and conflicting reports. That is
+                exactly what comes next.
+            </p>
+
+            <hr>
+
+            <h2>6. What v1 Does Not Do Yet</h2>
+
+            <ul>
+                <li>It only checks claims against the newsroom's own archive. It cannot check government data, court records or other outlets' reporting.</li>
+                <li>It has been tested on short synthetic articles, not on long real ones or at scale.</li>
+                <li>It runs locally today. Online deployment with sign-in and producer-only permissions is still to come.</li>
+                <li>Answers take about six seconds, which needs to come down for live use.</li>
+            </ul>
+
+            <hr>
+
+            <h2>What's Next</h2>
+
+            <ul>
+                <li>Dates written the way anchors say them ("20 January 2025")</li>
+                <li>A clear-screen control for the anchor display</li>
+                <li>Online deployment with sign-in</li>
+                <li>Testing on long articles and a much larger archive</li>
+                <li>Faster answers</li>
+                <li>Later: video moments, so a citation can point to the exact minute in a show</li>
+            </ul>
+
+            <p>
+                I'll keep posting updates here as each piece lands. If you work in a
+                newsroom and would like to try Gawaah on your own archive, get in
+                touch at <a href="mailto:info@syncnebula.com">info@syncnebula.com</a>.
+            </p>
+
+            <div class="post-tags">
+                <span>Azure OpenAI</span>
+                <span>Azure AI Search</span>
+                <span>Azure Functions</span>
+                <span>RAG</span>
+                <span>Urdu NLP</span>
+                <span>Journalism</span>
+            </div>
+
+        </article>
+
+    </main>
+
+    <!-- Footer -->
+    <footer>
+
+        <div class="footer-content">
+
+            <div>
+                <a href="../index.html#home" class="footer-logo">SyncNebula</a>
+                <p>Practical technology. Real-world solutions.</p>
+            </div>
+
+            <div class="footer-links">
+                <a href="../index.html#services">Services</a>
+                <a href="../index.html#projects">Projects</a>
+                <a href="../index.html#blog">Blog</a>
+                <a href="../index.html#about">About</a>
+            </div>
+
+        </div>
+
+        <div class="footer-bottom">
+            <p>© 2026 SyncNebula. All rights reserved.</p>
+        </div>
+
+    </footer>
+
+</body>
+</html>

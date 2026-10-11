@@ -7,7 +7,7 @@
     <title>Gawaah v1: An Archive Assistant for Urdu Newsrooms | SyncNebula</title>
 
     <meta name="description"
-          content="Gawaah is an AI archive assistant that answers a newsroom's questions in Urdu, Roman Urdu or English from its own published coverage, with sources. Version 1 prototype, how it works and how it was tested.">
+          content="Gawaah is an AI archive assistant that answers a newsroom's questions in Urdu, Roman Urdu or English from its own published coverage, with sources. Version 1 prototype and first test results.">
 
     <link rel="stylesheet" href="../CSS/style.css">
 </head>
@@ -70,11 +70,11 @@
                 working prototype. More updates will follow as it grows.
             </p>
 
-           <video autoplay loop muted playsinline
-           aria-label="Gawaah, the archive assistant bot"
-           style="width: 100%; border-radius: 12px; margin: 30px 0; box-shadow: 0 16px 42px rgba(15, 23, 42, 0.08);">
-           <source src="videos/gawaah-bot.mp4" type="video/mp4">
-           </video>
+            <video autoplay loop muted playsinline
+                   aria-label="Gawaah, the archive assistant bot"
+                   style="width: 100%; border-radius: 12px; margin: 30px 0; box-shadow: 0 16px 42px rgba(15, 23, 42, 0.08);">
+                <source src="videos/gawaah-bot.mp4" type="video/mp4">
+            </video>
 
             <hr>
 
@@ -95,42 +95,23 @@
 
             <h2>2. How It Works</h2>
 
-            <p>The pieces are few, and each has one job:</p>
-
-            <ul>
-                <li><strong>Azure OpenAI (GPT-5.5)</strong> — understands questions and writes the grounded answers.</li>
-                <li><strong>An embedding model</strong> — turns text into numeric "meaning fingerprints", so searches match on meaning as well as exact words.</li>
-                <li><strong>Azure AI Search</strong> — stores the archive and finds the best matching passages using keyword and meaning search together.</li>
-                <li><strong>Azure Storage</strong> — keeps the original articles, and a small table that carries evidence from the producer to the anchor.</li>
-                <li><strong>Azure Functions</strong> — the API that ties it together.</li>
-                <li><strong>Two simple web pages</strong> — one for the producer, one for the anchor.</li>
-            </ul>
-
-            <blockquote>
-                Question → rewritten into English and Urdu search queries → search the
-                archive → write an answer from the best passages only → show it with
-                sources → optionally send the one-line version to the anchor's screen.
-            </blockquote>
+            <p>
+                Gawaah is built on Azure. A language model understands the question,
+                a search layer finds the relevant passages in the newsroom's own
+                archive, and the answer is written strictly from what was found, with
+                links back to the originals. The producer reviews it before anything
+                reaches the anchor's screen.
+            </p>
 
             <hr>
 
             <h2>3. The Step That Made the Biggest Difference</h2>
 
             <p>
-                The first version simply searched with the question as typed. It
-                worked for most questions, but failed in a clear pattern: an English
-                question about a story published in Urdu kept returning English
-                articles instead, because words and meaning matched better within the
-                same language.
-            </p>
-
-            <p>
-                The fix was a short rewrite step before searching. A model turns each
-                question into a clean English query and a clean Urdu query, normalises
-                name spellings, and pulls out any date range mentioned. The search
-                then uses both. Misspelled names, Roman Urdu and cross-language
-                questions all improved at once, and date questions started using a
-                real date filter instead of hoping the model would guess.
+                Early tests showed a clear pattern: questions asked in one language
+                often missed stories published in another. A short preprocessing step
+                before searching fixed most of it. On the test set, the right article
+                was found for 15 of 20 questions at first, and for all 20 afterwards.
             </p>
 
             <hr>
@@ -139,23 +120,16 @@
 
             <p>
                 Search always returns something, even when the archive has nothing
-                useful. A tool that answers anyway is dangerous in a newsroom, where
-                one invented answer on air costs far more than ten honest "not found"
-                replies.
-            </p>
-
-            <p>
-                So the answer step has strict rules: use only the passages provided,
-                answer only the part that is actually supported, state what is
-                missing, and refuse when the passages merely share a name or place
-                with the question without answering it. The hardest tests were the
-                near-misses, such as a real person's name paired with a topic they
-                never spoke about.
+                useful, and a tool that answers anyway is dangerous in a newsroom,
+                where one invented answer on air costs far more than ten honest "not
+                found" replies. So the answer step is tightly constrained to the
+                retrieved passages and was tested on near-miss questions. It
+                correctly refused all 5 questions that had no answer.
             </p>
 
             <blockquote>
-                Lesson: retrieval finds candidates; it is the answer step's job to
-                decide whether any of them actually answer the question.
+                Lesson: finding candidates is not the same as answering. The system
+                has to be able to say "I don't know."
             </blockquote>
 
             <hr>
@@ -173,39 +147,34 @@
 
             <ul>
                 <li>Plain search found the right article for <strong>15 of the 20</strong> answerable questions.</li>
-                <li>With the rewrite step, it found the right article for <strong>all 20</strong>.</li>
-                <li>With the answer rules in place, it correctly refused <strong>all 5</strong> questions that had no answer.</li>
+                <li>With the preprocessing step, it found the right article for <strong>all 20</strong>.</li>
+                <li>It correctly refused <strong>all 5</strong> questions that had no answer.</li>
                 <li>A typical answer takes about six seconds.</li>
             </ul>
 
             <p>
                 This is a small, controlled test. It shows the approach works, not
                 that it is ready for a real archive of thousands of articles with
-                messy text, near-duplicate stories and conflicting reports. That is
-                exactly what comes next.
+                messy text, near-duplicate stories and conflicting reports.
             </p>
 
             <hr>
 
-            <h2>6. What v1 Does Not Do Yet</h2>
+            <h2>6. Where It Stands</h2>
 
-            <ul>
-                <li>It only checks claims against the newsroom's own archive. It cannot check government data, court records or other outlets' reporting.</li>
-                <li>It has been tested on short synthetic articles, not on long real ones or at scale.</li>
-                <li>It runs locally today. Online deployment with sign-in and producer-only permissions is still to come.</li>
-                <li>Answers take about six seconds, which needs to come down for live use.</li>
-            </ul>
+            <p>
+                Version 1 runs locally on a small synthetic archive. It checks claims
+                against the newsroom's own coverage only, and testing on large, messy,
+                real-world archives is the next milestone.
+            </p>
 
             <hr>
 
             <h2>What's Next</h2>
 
             <ul>
-                <li>Dates written the way anchors say them ("20 January 2025")</li>
-                <li>A clear-screen control for the anchor display</li>
-                <li>Online deployment with sign-in</li>
-                <li>Testing on long articles and a much larger archive</li>
-                <li>Faster answers</li>
+                <li>Testing on a much larger, real-world archive</li>
+                <li>Faster answers and online deployment</li>
                 <li>Later: video moments, so a citation can point to the exact minute in a show</li>
             </ul>
 
